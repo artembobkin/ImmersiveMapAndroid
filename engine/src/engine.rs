@@ -82,6 +82,20 @@ pub struct MapEngine {
     pixels_per_point: f64,
 }
 
+/// How many times a drag across the view's full height sweeps the reachable
+/// pitch, as `tiltGestureSensitivity` defaults to on the web. Negative
+/// would invert the drag.
+pub const TILT_GESTURE_SENSITIVITY: f64 = 2.0;
+
+/// The pitch change of a vertical tilt drag of `translation_y` points in a
+/// view `view_height` points high: down tilts further, up levels off.
+pub fn tilt_drag_pitch_delta(translation_y: f64, view_height: f64, maximum_pitch: f64, sensitivity: f64) -> f64 {
+    if view_height.is_nan() || view_height <= 0.0 {
+        return 0.0;
+    }
+    translation_y / view_height * maximum_pitch.max(0.0) * sensitivity
+}
+
 fn view_settings() -> ViewSettings {
     ViewSettings { presentation: PresentationSettings { is_globe_enabled: false, ..PresentationSettings::default() }, maximum_zoom_level: 15, raster_band_margin_share: 0.0, rule_sets: RingRuleSets::default() }
 }
@@ -240,6 +254,16 @@ impl MapEngine {
     pub fn tilt(&mut self, delta: f64) {
         let pitch = self.camera.camera_state().pitch;
         self.camera.set_pitch(pitch + delta);
+    }
+
+    /// A two-finger tilt drag by a vertical distance in points, down
+    /// tilting further: the view's full height sweeps the reachable pitch
+    /// [`TILT_GESTURE_SENSITIVITY`] times over, as on the other ports.
+    pub fn tilt_by_drag(&mut self, translation_y: f64) {
+        let state = self.camera.camera_state();
+        let maximum_pitch = CameraSettings::default().maximum_reachable_pitch(state.zoom);
+        let view_height = self.height as f64 / self.pixels_per_point;
+        self.tilt(tilt_drag_pitch_delta(translation_y, view_height, maximum_pitch, TILT_GESTURE_SENSITIVITY));
     }
 
     fn transition(&self) -> f64 {

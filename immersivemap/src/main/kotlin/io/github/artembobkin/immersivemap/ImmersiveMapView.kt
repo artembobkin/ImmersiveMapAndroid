@@ -16,6 +16,7 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import java.util.concurrent.CountDownLatch
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.atan2
 
 /**
@@ -135,6 +136,8 @@ class ImmersiveMapView @JvmOverloads constructor(context: Context, attrs: Attrib
         override fun onDown(event: MotionEvent) = true
 
         override fun onScroll(first: MotionEvent?, current: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
+            // Two fingers that may be tilting, or are, don't also pan the map.
+            if (current.pointerCount >= 2 && tiltPhase != null && tiltPhase != TiltPhase.REJECTED) return true
             // The distances are from the current event back to the last: the finger's move is their negative.
             val (deltaX, deltaY) = -distanceX / density.toDouble() to -distanceY / density.toDouble()
             command { NativeEngine.pan(it, deltaX, deltaY) }
@@ -156,6 +159,7 @@ class ImmersiveMapView @JvmOverloads constructor(context: Context, attrs: Attrib
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        tilt(event)
         pinch.onTouchEvent(event)
         drag.onTouchEvent(event)
         turn(event)
@@ -179,5 +183,83 @@ class ImmersiveMapView @JvmOverloads constructor(context: Context, attrs: Attrib
             if (delta != 0.0) command { NativeEngine.rotate(it, -delta) }
         }
         twoFingerAngle = angle
+    }
+
+    /**
+     * Where a two-finger drag stands as a tilt: undecided until the fingers
+     * have moved together far enough to tell, then tilting, or rejected and
+     * left to the pinch and the turn until the fingers lift. Null with other
+     * than two fingers down.
+     */
+    private enum class TiltPhase { UNDECIDED, TILTING, REJECTED }
+
+    private var tiltPhase: TiltPhase? = null
+
+    /** The two fingers' midpoint at the last event, in points. */
+    private var tiltLastX = 0.0
+    private var tiltLastY = 0.0
+
+    /** The midpoint's movement not yet applied, in points. */
+    private var tiltTranslationX = 0.0
+    private var tiltTranslationY = 0.0
+
+    /**
+     * Two fingers side by side dragged up or down tilt the camera, down
+     * tilting further, as on the other ports (the web's
+     * `TwoFingerTiltGestureMath`). Fingers stacked closer to vertically than
+     * horizontally are a pinch or a turn and never tilt. The drag commits once
+     * the fingers have moved [TILT_ACTIVATION_DISTANCE] together: mostly
+     * vertically it tilts, with the movement so far, otherwise it never does.
+     */
+    private fun tilt(event: MotionEvent) {
+        if (event.pointerCount != 2 || event.actionMasked == MotionEvent.ACTION_POINTER_UP ||
+            event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL
+        ) {
+            tiltPhase = null
+            return
+        }
+        val points = density.toDouble()
+        val x = (event.getX(0) + event.getX(1)) / 2 / points
+        val y = (event.getY(0) + event.getY(1)) / 2 / points
+        val phase = tiltPhase
+        if (phase == null) {
+            val sideBySide = abs(event.getY(1) - event.getY(0)) <= abs(event.getX(1) - event.getX(0))
+            tiltPhase = if (sideBySide) TiltPhase.UNDECIDED else TiltPhase.REJECTED
+            tiltLastX = x
+            tiltLastY = y
+            tiltTranslationX = 0.0
+            tiltTranslationY = 0.0
+            return
+        }
+        tiltTranslationX += x - tiltLastX
+        tiltTranslationY += y - tiltLastY
+        tiltLastX = x
+        tiltLastY = y
+        when (phase) {
+            TiltPhase.UNDECIDED -> {
+                if (abs(tiltTranslationX) + abs(tiltTranslationY) >= TILT_ACTIVATION_DISTANCE) {
+                    if (abs(tiltTranslationY) > abs(tiltTranslationX)) {
+                        tiltPhase = TiltPhase.TILTING
+                        applyTilt()
+                    } else {
+                        tiltPhase = TiltPhase.REJECTED
+                    }
+                }
+            }
+            TiltPhase.TILTING -> applyTilt()
+            TiltPhase.REJECTED -> Unit
+        }
+    }
+
+    private fun applyTilt() {
+        val translationY = tiltTranslationY
+        tiltTranslationX = 0.0
+        tiltTranslationY = 0.0
+        if (translationY != 0.0) command { NativeEngine.tiltByDrag(it, translationY) }
+    }
+
+    private companion object {
+        /** How far the fingers move together before a two-finger drag is or isn't a tilt, in points. */
+        const val TILT_ACTIVATION_DISTANCE = 8.0
     }
 }

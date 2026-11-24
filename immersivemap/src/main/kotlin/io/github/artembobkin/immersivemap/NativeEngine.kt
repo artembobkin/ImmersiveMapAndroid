@@ -40,6 +40,9 @@ internal object NativeEngine {
     /** A tilt of the camera by an angle, radians. */
     external fun tilt(handle: Long, delta: Double)
 
+    /** A two-finger tilt drag by a vertical distance in points, down tilting further. */
+    external fun tiltByDrag(handle: Long, translationY: Double)
+
     /** The camera at a latitude and longitude in degrees, the bearing and the pitch in radians. 1 when taken. */
     external fun setCameraPosition(handle: Long, latitude: Double, longitude: Double, zoom: Double, bearing: Double, pitch: Double): Int
 }

@@ -62,3 +62,26 @@ fn gestures_move_the_camera_and_the_coverage_follows() {
     validated_frame(&mut engine);
     assert!(engine.set_camera_position(89.0, 0.0, 3.0, 0.0, 0.0).is_err(), "past the Mercator limit");
 }
+
+#[test]
+fn a_two_finger_drag_down_tilts_and_up_levels() {
+    use immersive_map_engine::engine::{TILT_GESTURE_SENSITIVITY, tilt_drag_pitch_delta};
+    // The full height sweeps the reachable pitch twice, as on the web.
+    assert!((tilt_drag_pitch_delta(960.0, 1920.0, 1.2, TILT_GESTURE_SENSITIVITY) - 1.2).abs() < 1e-12);
+    assert!((tilt_drag_pitch_delta(-480.0, 1920.0, 1.2, TILT_GESTURE_SENSITIVITY) + 0.6).abs() < 1e-12);
+    assert_eq!(tilt_drag_pitch_delta(100.0, 0.0, 1.2, TILT_GESTURE_SENSITIVITY), 0.0, "no view, no tilt");
+
+    let Some(mut engine) = engine() else { return };
+    let level = engine.camera_state().pitch;
+    engine.tilt_by_drag(200.0);
+    let tilted = engine.camera_state().pitch;
+    assert!(tilted > level, "down tilts further");
+    engine.tilt_by_drag(-100.0);
+    let back = engine.camera_state().pitch;
+    assert!(back < tilted && back >= level, "up levels off");
+    engine.tilt_by_drag(1.0e6);
+    let most = engine.camera_state().pitch;
+    engine.tilt_by_drag(10.0);
+    assert_eq!(engine.camera_state().pitch, most, "held at the reachable pitch");
+    validated_frame(&mut engine);
+}

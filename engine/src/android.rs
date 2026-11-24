@@ -124,6 +124,14 @@ pub extern "system" fn Java_io_github_artembobkin_immersivemap_NativeEngine_tilt
     }
 }
 
+/// A two-finger tilt drag by a vertical distance in points, down tilting further.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_artembobkin_immersivemap_NativeEngine_tiltByDrag(_env: JNIEnv, _this: JObject, handle: jlong, translation_y: jdouble) {
+    if let Some(engine) = engine(handle) {
+        engine.tilt_by_drag(translation_y);
+    }
+}
+
 /// The camera at a latitude and longitude in degrees, the bearing and the pitch in radians. Returns 1 when taken.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_io_github_artembobkin_immersivemap_NativeEngine_setCameraPosition(_env: JNIEnv, _this: JObject, handle: jlong, latitude: jdouble, longitude: jdouble, zoom: jdouble, bearing: jdouble, pitch: jdouble) -> jint {
