@@ -11,6 +11,7 @@
 //! the plane at every zoom until the globe's draw is ported.
 
 use map_camera::controller::{CameraPositionError, CameraStateController};
+use map_camera::flight::{CameraFlightAnimator, FlightAltitude, FlightRoute};
 use map_camera::follow::{ZoomAnchorInput, zoom_anchor_center};
 use map_camera::{CameraSettings, CameraState, PresentationSettings, RenderCamera};
 use map_frame::view::{FrameView, ViewInput, ViewSettings};
@@ -80,6 +81,8 @@ pub struct MapEngine {
     height: u32,
     /// Device pixels per point: gestures arrive in points.
     pixels_per_point: f64,
+    /// The camera's animation, the double tap's flight.
+    flight: CameraFlightAnimator,
 }
 
 /// How many times a drag across the view's full height sweeps the reachable
@@ -95,6 +98,15 @@ pub fn tilt_drag_pitch_delta(translation_y: f64, view_height: f64, maximum_pitch
     }
     translation_y / view_height * maximum_pitch.max(0.0) * sensitivity
 }
+
+/// The share of the fingers' turn the map turns by, as
+/// `rotationGestureSensitivity` defaults to on the web: positive turns the
+/// map with the fingers.
+pub const ROTATION_GESTURE_SENSITIVITY: f64 = 0.6;
+
+/// The double tap's anchored zoom: one level in, over this many seconds, as on the web.
+pub const DOUBLE_TAP_ZOOM_DELTA: f64 = 1.0;
+pub const DOUBLE_TAP_FLIGHT_DURATION: f64 = 0.35;
 
 fn view_settings() -> ViewSettings {
     ViewSettings { presentation: PresentationSettings { is_globe_enabled: false, ..PresentationSettings::default() }, maximum_zoom_level: 15, raster_band_margin_share: 0.0, rule_sets: RingRuleSets::default() }
@@ -182,7 +194,7 @@ impl MapEngine {
         let mut camera = CameraStateController::new(CameraSettings::default());
         // Moscow's centre, as the engine's other ports start.
         camera.set_camera_position(55.751244, 37.618423, 12.0, 0.0, 0.0).expect("a position within the map");
-        MapEngine { device, queue, target, pipeline, frame_buffer, bind_group, instance_buffer, instance_capacity, instances: Vec::new(), camera, view: FrameView::new(), settings: view_settings(), width: width.max(1), height: height.max(1), pixels_per_point: pixels_per_point.max(0.1) }
+        MapEngine { device, queue, target, pipeline, frame_buffer, bind_group, instance_buffer, instance_capacity, instances: Vec::new(), camera, view: FrameView::new(), settings: view_settings(), width: width.max(1), height: height.max(1), pixels_per_point: pixels_per_point.max(0.1), flight: CameraFlightAnimator::default() }
     }
 
     fn make_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
@@ -206,6 +218,7 @@ impl MapEngine {
 
     /// The camera at a latitude and longitude in degrees, the bearing and the pitch in radians.
     pub fn set_camera_position(&mut self, latitude: f64, longitude: f64, zoom: f64, bearing: f64, pitch: f64) -> Result<(), EngineError> {
+        self.flight.cancel();
         self.camera.set_camera_position(latitude, longitude, zoom, bearing, pitch).map_err(EngineError::Camera)
     }
 
@@ -248,6 +261,42 @@ impl MapEngine {
     /// A turn of the map by an angle, radians.
     pub fn rotate(&mut self, delta: f64) {
         self.camera.rotate_yaw(delta);
+    }
+
+    /// A two-finger turn by the fingers' angle, radians, clockwise on screen
+    /// positive: the map turns with them by [`ROTATION_GESTURE_SENSITIVITY`].
+    pub fn rotate_by_gesture(&mut self, angle: f64) {
+        self.rotate(angle * ROTATION_GESTURE_SENSITIVITY);
+    }
+
+    /// A double tap at a point of the view, in points from its top left:
+    /// the camera flies [`DOUBLE_TAP_ZOOM_DELTA`] levels in toward it over
+    /// [`DOUBLE_TAP_FLIGHT_DURATION`] seconds from `now`, in seconds, and
+    /// lands with the map under the point still under it. False when there
+    /// is nowhere to fly, at the deepest zoom.
+    pub fn double_tap_zoom(&mut self, x: f64, y: f64, now: f64) -> bool {
+        let start = self.camera.camera_state();
+        self.zoom_about(DOUBLE_TAP_ZOOM_DELTA.exp2(), x, y);
+        let target = self.camera.camera_state();
+        self.camera.set_camera_state(start);
+        self.flight.start(start, target, DOUBLE_TAP_FLIGHT_DURATION, FlightRoute::MercatorShortestPath, FlightAltitude::Direct, now)
+    }
+
+    /// Moves the camera's animation to `now`, in seconds on the clock its
+    /// start was given. True while it goes on: the host draws another frame.
+    pub fn advance_animations(&mut self, now: f64) -> bool {
+        match self.flight.advance(now) {
+            Some(step) => {
+                self.camera.set_camera_state(step.camera_state);
+                !step.did_finish
+            }
+            None => false,
+        }
+    }
+
+    /// Stops the camera's animation where it is: a gesture takes the camera.
+    pub fn cancel_animations(&mut self) {
+        self.flight.cancel();
     }
 
     /// A tilt of the camera by an angle, radians, within the settings' range.

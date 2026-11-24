@@ -124,6 +124,35 @@ pub extern "system" fn Java_io_github_artembobkin_immersivemap_NativeEngine_tilt
     }
 }
 
+/// A two-finger turn by the fingers' angle, radians, clockwise on screen positive.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_artembobkin_immersivemap_NativeEngine_rotateByGesture(_env: JNIEnv, _this: JObject, handle: jlong, angle: jdouble) {
+    if let Some(engine) = engine(handle) {
+        engine.rotate_by_gesture(angle);
+    }
+}
+
+/// A double tap at a point in points: the flight one level in toward it starts at `now`, seconds.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_artembobkin_immersivemap_NativeEngine_doubleTapZoom(_env: JNIEnv, _this: JObject, handle: jlong, x: jdouble, y: jdouble, now: jdouble) {
+    if let Some(engine) = engine(handle) {
+        engine.double_tap_zoom(x, y, now);
+    }
+}
+
+/// Moves the camera's animation to `now`, seconds. Returns 1 while it goes on.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_artembobkin_immersivemap_NativeEngine_advanceAnimations(_env: JNIEnv, _this: JObject, handle: jlong, now: jdouble) -> jint {
+    engine(handle).map_or(0, |engine| engine.advance_animations(now) as jint)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_artembobkin_immersivemap_NativeEngine_cancelAnimations(_env: JNIEnv, _this: JObject, handle: jlong) {
+    if let Some(engine) = engine(handle) {
+        engine.cancel_animations();
+    }
+}
+
 /// A two-finger tilt drag by a vertical distance in points, down tilting further.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_io_github_artembobkin_immersivemap_NativeEngine_tiltByDrag(_env: JNIEnv, _this: JObject, handle: jlong, translation_y: jdouble) {

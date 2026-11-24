@@ -37,6 +37,18 @@ internal object NativeEngine {
     /** A turn of the map by an angle, radians. */
     external fun rotate(handle: Long, delta: Double)
 
+    /** A two-finger turn by the fingers' angle, radians, clockwise on screen positive: the map turns with them. */
+    external fun rotateByGesture(handle: Long, angle: Double)
+
+    /** A double tap at a point, in points from the view's top left: a flight one level in toward it, starting at [now], seconds. */
+    external fun doubleTapZoom(handle: Long, x: Double, y: Double, now: Double)
+
+    /** Moves the camera's animation to [now], seconds. 1 while it goes on. */
+    external fun advanceAnimations(handle: Long, now: Double): Int
+
+    /** Stops the camera's animation where it is. */
+    external fun cancelAnimations(handle: Long)
+
     /** A tilt of the camera by an angle, radians. */
     external fun tilt(handle: Long, delta: Double)
 

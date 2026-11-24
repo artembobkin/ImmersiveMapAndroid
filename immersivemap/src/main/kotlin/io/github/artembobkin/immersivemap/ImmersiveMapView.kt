@@ -46,11 +46,14 @@ class ImmersiveMapView @JvmOverloads constructor(context: Context, attrs: Attrib
     /** The camera to start at, kept until there is an engine to give it to. */
     private var pendingCamera: DoubleArray? = null
 
-    private val frameCallback = Choreographer.FrameCallback {
+    private val frameCallback = Choreographer.FrameCallback { frameTimeNanos ->
         frameRequested = false
         if (engine != 0L) {
+            // An animation moves the camera to the frame's time, and asks for the next frame while it goes on.
+            val animating = NativeEngine.advanceAnimations(engine, frameTimeNanos / NANOS_PER_SECOND) != 0
             val tiles = NativeEngine.render(engine)
             onFrame?.let { listener -> post { listener(tiles) } }
+            if (animating) requestFrame()
         }
     }
 
@@ -133,9 +136,23 @@ class ImmersiveMapView @JvmOverloads constructor(context: Context, attrs: Attrib
     // The gestures
 
     private val drag = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
-        override fun onDown(event: MotionEvent) = true
+        override fun onDown(event: MotionEvent): Boolean {
+            scrolledSinceDown = false
+            return true
+        }
+
+        /** The second tap's release flies one level in toward it, as on the web, unless the finger dragged. */
+        override fun onDoubleTapEvent(event: MotionEvent): Boolean {
+            if (event.actionMasked == MotionEvent.ACTION_UP && !scrolledSinceDown) {
+                val (x, y) = event.x / density.toDouble() to event.y / density.toDouble()
+                val now = System.nanoTime() / NANOS_PER_SECOND
+                command { NativeEngine.doubleTapZoom(it, x, y, now) }
+            }
+            return true
+        }
 
         override fun onScroll(first: MotionEvent?, current: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
+            scrolledSinceDown = true
             // Two fingers that may be tilting, or are, don't also pan the map.
             if (current.pointerCount >= 2 && tiltPhase != null && tiltPhase != TiltPhase.REJECTED) return true
             // The distances are from the current event back to the last: the finger's move is their negative.
@@ -154,11 +171,19 @@ class ImmersiveMapView @JvmOverloads constructor(context: Context, attrs: Attrib
         }
     })
 
+    /** Whether the finger down now has dragged the map: its release is no tap. */
+    private var scrolledSinceDown = false
+
     /** The angle of the line between the first two pointers, null with fewer than two. */
     private var twoFingerAngle: Double? = null
 
+    /** The fingers' turn so far, until it passes [ROTATION_SLOP] and the map starts turning; null once it has. */
+    private var pendingTurn: Double? = 0.0
+
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        // A touch takes the camera from its animation, where it is.
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) command { NativeEngine.cancelAnimations(it) }
         tilt(event)
         pinch.onTouchEvent(event)
         drag.onTouchEvent(event)
@@ -169,10 +194,15 @@ class ImmersiveMapView @JvmOverloads constructor(context: Context, attrs: Attrib
         return true
     }
 
-    /** Two fingers turning about each other turn the map with them. */
+    /**
+     * Two fingers turning about each other turn the map with them, once they
+     * have turned [ROTATION_SLOP] together, as on the web: a pinch's wobble
+     * doesn't turn the map.
+     */
     private fun turn(event: MotionEvent) {
         if (event.pointerCount < 2 || event.actionMasked == MotionEvent.ACTION_POINTER_UP) {
             twoFingerAngle = null
+            if (event.pointerCount < 2) pendingTurn = 0.0
             return
         }
         val angle = atan2((event.getY(1) - event.getY(0)).toDouble(), (event.getX(1) - event.getX(0)).toDouble())
@@ -182,7 +212,15 @@ class ImmersiveMapView @JvmOverloads constructor(context: Context, attrs: Attrib
             // On a screen whose y runs down, fingers turning clockwise give a
             // positive delta, and a growing bearing turns the map clockwise on
             // screen (the core's RenderCamera::pose): the map turns with them.
-            if (delta != 0.0) command { NativeEngine.rotate(it, delta) }
+            val pending = pendingTurn
+            if (pending == null) {
+                if (delta != 0.0) command { NativeEngine.rotateByGesture(it, delta) }
+            } else if (abs(pending + delta) >= ROTATION_SLOP) {
+                pendingTurn = null
+                command { NativeEngine.rotateByGesture(it, pending + delta) }
+            } else {
+                pendingTurn = pending + delta
+            }
         }
         twoFingerAngle = angle
     }
@@ -263,5 +301,10 @@ class ImmersiveMapView @JvmOverloads constructor(context: Context, attrs: Attrib
     private companion object {
         /** How far the fingers move together before a two-finger drag is or isn't a tilt, in points. */
         const val TILT_ACTIVATION_DISTANCE = 8.0
+
+        /** How far two fingers turn together before the map turns with them, radians. */
+        const val ROTATION_SLOP = 0.06
+
+        const val NANOS_PER_SECOND = 1.0e9
     }
 }

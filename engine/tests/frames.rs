@@ -85,3 +85,49 @@ fn a_two_finger_drag_down_tilts_and_up_levels() {
     assert_eq!(engine.camera_state().pitch, most, "held at the reachable pitch");
     validated_frame(&mut engine);
 }
+
+#[test]
+fn a_double_tap_flies_one_level_in_toward_the_point() {
+    use immersive_map_engine::engine::{DOUBLE_TAP_FLIGHT_DURATION, DOUBLE_TAP_ZOOM_DELTA};
+    let Some(mut engine) = engine() else { return };
+    let start = engine.camera_state();
+    // Where a pinch of the same zoom about the same point lands is where the flight lands.
+    engine.zoom_about(DOUBLE_TAP_ZOOM_DELTA.exp2(), 200.0, 300.0);
+    let expected = engine.camera_state();
+    engine.set_camera_position(55.751244, 37.618423, 12.0, 0.0, 0.0).expect("the start");
+    assert_eq!(engine.camera_state(), start);
+
+    // From time 0, the duration is exact in floating point.
+    assert!(engine.double_tap_zoom(200.0, 300.0, 0.0));
+    assert_eq!(engine.camera_state(), start, "the flight starts where the camera is");
+    assert!(engine.advance_animations(DOUBLE_TAP_FLIGHT_DURATION / 2.0), "half way it goes on");
+    let half = engine.camera_state();
+    assert!(half.zoom > start.zoom && half.zoom < expected.zoom);
+    validated_frame(&mut engine);
+    assert!(!engine.advance_animations(DOUBLE_TAP_FLIGHT_DURATION), "it lands at its duration");
+    let landed = engine.camera_state();
+    assert!((landed.zoom - start.zoom - DOUBLE_TAP_ZOOM_DELTA).abs() < 1e-9);
+    for axis in 0..2 {
+        assert!((landed.center_world_mercator[axis] - expected.center_world_mercator[axis]).abs() < 1e-12, "the point stays under the finger");
+    }
+    assert!(!engine.advance_animations(11.0), "nothing goes on after it");
+
+    // A touch stops the flight where it is.
+    assert!(engine.double_tap_zoom(200.0, 300.0, 20.0));
+    engine.advance_animations(20.1);
+    let stopped = engine.camera_state();
+    engine.cancel_animations();
+    assert!(!engine.advance_animations(20.3));
+    assert_eq!(engine.camera_state(), stopped);
+}
+
+#[test]
+fn a_two_finger_turn_turns_the_map_by_the_sensitivity() {
+    use immersive_map_engine::engine::ROTATION_GESTURE_SENSITIVITY;
+    let Some(mut engine) = engine() else { return };
+    let before = engine.camera_state().bearing;
+    engine.rotate_by_gesture(0.5);
+    let turned = engine.camera_state().bearing - before;
+    assert!(turned > 0.0, "clockwise fingers turn the map clockwise");
+    assert!((turned - 0.5 * ROTATION_GESTURE_SENSITIVITY).abs() < 1e-12);
+}
