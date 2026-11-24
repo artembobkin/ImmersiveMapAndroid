@@ -179,8 +179,10 @@ class ImmersiveMapView @JvmOverloads constructor(context: Context, attrs: Attrib
         twoFingerAngle?.let { previous ->
             var delta = angle - previous
             if (delta > PI) delta -= 2 * PI else if (delta < -PI) delta += 2 * PI
-            // The screen's y runs down, the map's bearing is counted the other way round.
-            if (delta != 0.0) command { NativeEngine.rotate(it, -delta) }
+            // On a screen whose y runs down, fingers turning clockwise give a
+            // positive delta, and a growing bearing turns the map clockwise on
+            // screen (the core's RenderCamera::pose): the map turns with them.
+            if (delta != 0.0) command { NativeEngine.rotate(it, delta) }
         }
         twoFingerAngle = angle
     }
