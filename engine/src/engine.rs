@@ -6,9 +6,11 @@
 //! (`map_frame::view`: presentation, render camera, tile coverage) and draws
 //! the tiles the view names.
 //!
-//! What it draws so far is the coverage itself, each tile a square coloured
-//! by its zoom: the tiles' contents come with the tile loader. The map is
-//! the plane at every zoom until the globe's draw is ported.
+//! The frame is drawn by `frame::FrameEngine`, which runs the subsystems'
+//! layers in their passes. What it draws so far is the coverage itself,
+//! each tile a square coloured by its zoom (`tile_grid`): the tiles'
+//! contents come with the tile loader. The map is the plane at every zoom
+//! until the globe's draw is ported.
 
 use map_camera::controller::{CameraPositionError, CameraStateController};
 use map_camera::flight::{CameraFlightAnimator, FlightAltitude, FlightRoute};
@@ -18,9 +20,10 @@ use map_frame::view::{FrameView, ViewInput, ViewSettings};
 use map_geo::matrix;
 use map_visibility::rule_sets::RingRuleSets;
 
-const SHADER: &str = include_str!("tile_grid.wgsl");
-/// Floats per tile instance: the origin's x and y, the size, then the colour.
-const INSTANCE_FLOATS: usize = 7;
+use crate::frame::{FrameContext, FrameEngine, FrameFormats, FrameSetup, RenderSubsystem};
+use crate::gpu::GpuContext;
+use crate::render_layer::{RenderPassAvailability, RenderSurfaceMode};
+use crate::tile_grid::TileGridSubsystem;
 /// The colour behind the map: the sky's, until the sky is drawn.
 const CLEAR_COLOR: wgpu::Color = wgpu::Color { r: 0.62, g: 0.74, b: 0.86, a: 1.0 };
 
@@ -64,15 +67,11 @@ enum Target {
 }
 
 pub struct MapEngine {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+    gpu: GpuContext,
     target: Target,
-    pipeline: wgpu::RenderPipeline,
-    frame_buffer: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
-    instance_buffer: wgpu::Buffer,
-    instance_capacity: usize,
-    instances: Vec<f32>,
+    frame_engine: FrameEngine,
+    tile_grid: TileGridSubsystem,
+    frame_number: u64,
     camera: CameraStateController,
     view: FrameView,
     settings: ViewSettings,
@@ -108,18 +107,14 @@ pub const ROTATION_GESTURE_SENSITIVITY: f64 = 0.6;
 pub const DOUBLE_TAP_ZOOM_DELTA: f64 = 1.0;
 pub const DOUBLE_TAP_FLIGHT_DURATION: f64 = 0.35;
 
-fn view_settings() -> ViewSettings {
-    ViewSettings { presentation: PresentationSettings { is_globe_enabled: false, ..PresentationSettings::default() }, maximum_zoom_level: 15, raster_band_margin_share: 0.0, rule_sets: RingRuleSets::default() }
+/// What a frame draws before the subsystems add theirs: the plane, with
+/// nothing of the layers whose content is not ported yet.
+fn availability() -> RenderPassAvailability {
+    RenderPassAvailability { render_surface_mode: RenderSurfaceMode::Flat, labels_enabled: false, pins_enabled: false, debug_overlay_enabled: false, starfield_enabled: false, scene_models_enabled: false, app_layers_enabled: false, tile_grid_enabled: false }
 }
 
-/// The colour a tile of a zoom is drawn in: a hue a zoom, so the bands of the coverage read apart.
-fn zoom_color(zoom: i32) -> [f32; 4] {
-    let hue = (zoom as f32 * 0.137).fract() * 6.0;
-    let channel = |offset: f32| {
-        let k = (offset + hue) % 6.0;
-        0.92 - 0.3 * k.min(4.0 - k).clamp(0.0, 1.0)
-    };
-    [channel(5.0), channel(3.0), channel(1.0), 1.0]
+fn view_settings() -> ViewSettings {
+    ViewSettings { presentation: PresentationSettings { is_globe_enabled: false, ..PresentationSettings::default() }, maximum_zoom_level: 15, raster_band_margin_share: 0.0, rule_sets: RingRuleSets::default() }
 }
 
 impl MapEngine {
@@ -129,13 +124,13 @@ impl MapEngine {
             .request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, compatible_surface: Some(&surface), force_fallback_adapter: false, apply_limit_buckets: false })
             .await
             .map_err(|error| EngineError::NoAdapter(error.to_string()))?;
-        let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor::default()).await.map_err(|error| EngineError::NoDevice(error.to_string()))?;
+        let gpu = GpuContext::new(&adapter).await.map_err(|error| EngineError::NoDevice(error.to_string()))?;
         let mut config = surface.get_default_config(&adapter, width.max(1), height.max(1)).ok_or_else(|| EngineError::Surface("the adapter has no format for it".to_owned()))?;
         // Frames are drawn on demand and shown at the display's pace.
         config.present_mode = wgpu::PresentMode::Fifo;
-        surface.configure(&device, &config);
+        surface.configure(&gpu.device, &config);
         let format = config.format;
-        Ok(MapEngine::new(device, queue, Target::Surface { surface, config }, format, width, height, pixels_per_point))
+        Ok(MapEngine::new(gpu, Target::Surface { surface, config }, format, width, height, pixels_per_point))
     }
 
     /// An engine that draws to a texture: for a host with no window, the tests among them.
@@ -145,9 +140,9 @@ impl MapEngine {
             .request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, compatible_surface: None, force_fallback_adapter: false, apply_limit_buckets: false })
             .await
             .map_err(|error| EngineError::NoAdapter(error.to_string()))?;
-        let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor::default()).await.map_err(|error| EngineError::NoDevice(error.to_string()))?;
+        let gpu = GpuContext::new(&adapter).await.map_err(|error| EngineError::NoDevice(error.to_string()))?;
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("frame"),
             size: wgpu::Extent3d { width: width.max(1), height: height.max(1), depth_or_array_layers: 1 },
             mip_level_count: 1,
@@ -157,48 +152,16 @@ impl MapEngine {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        Ok(MapEngine::new(device, queue, Target::Texture(texture), format, width, height, 1.0))
+        Ok(MapEngine::new(gpu, Target::Texture(texture), format, width, height, 1.0))
     }
 
-    fn new(device: wgpu::Device, queue: wgpu::Queue, target: Target, format: wgpu::TextureFormat, width: u32, height: u32, pixels_per_point: f64) -> MapEngine {
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("tile grid"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("frame"),
-            entries: &[wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::VERTEX, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: wgpu::BufferSize::new(64) }, count: None }],
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("tile grid"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("tile grid"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("vertex"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: (INSTANCE_FLOATS * 4) as u64,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &[wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 }, wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 12, shader_location: 1 }],
-                })],
-            },
-            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, ..Default::default() },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fragment"), compilation_options: Default::default(), targets: &[Some(format.into())] }),
-            multiview_mask: None,
-            cache: None,
-        });
-        let frame_buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some("frame"), size: 64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("frame"), layout: &layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: frame_buffer.as_entire_binding() }] });
-        let instance_capacity = 256;
-        let instance_buffer = Self::make_instance_buffer(&device, instance_capacity);
+    fn new(gpu: GpuContext, target: Target, format: wgpu::TextureFormat, width: u32, height: u32, pixels_per_point: f64) -> MapEngine {
+        let formats = FrameFormats { color: format, world_depth_stencil: gpu.capabilities.depth_stencil_format(), overlay_depth: wgpu::TextureFormat::Depth32Float };
+        let tile_grid = TileGridSubsystem::new(&gpu.device, formats);
         let mut camera = CameraStateController::new(CameraSettings::default());
         // Moscow's centre, as the engine's other ports start.
         camera.set_camera_position(55.751244, 37.618423, 12.0, 0.0, 0.0).expect("a position within the map");
-        MapEngine { device, queue, target, pipeline, frame_buffer, bind_group, instance_buffer, instance_capacity, instances: Vec::new(), camera, view: FrameView::new(), settings: view_settings(), width: width.max(1), height: height.max(1), pixels_per_point: pixels_per_point.max(0.1), flight: CameraFlightAnimator::default() }
-    }
-
-    fn make_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
-        device.create_buffer(&wgpu::BufferDescriptor { label: Some("tiles"), size: (capacity * INSTANCE_FLOATS * 4) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
+        MapEngine { gpu, target, frame_engine: FrameEngine::new(formats), tile_grid, frame_number: 0, camera, view: FrameView::new(), settings: view_settings(), width: width.max(1), height: height.max(1), pixels_per_point: pixels_per_point.max(0.1), flight: CameraFlightAnimator::default() }
     }
 
     /// The drawable changed its size, in device pixels.
@@ -208,7 +171,11 @@ impl MapEngine {
         if let Target::Surface { surface, config } = &mut self.target {
             config.width = self.width;
             config.height = self.height;
-            surface.configure(&self.device, config);
+            surface.configure(&self.gpu.device, config);
+        }
+        if let Target::Texture(texture) = &mut self.target {
+            // The texture is made again at the new size, as a surface is configured again.
+            *texture = self.gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("frame"), size: wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: texture.format(), usage: texture.usage(), view_formats: &[] });
         }
     }
 
@@ -325,32 +292,7 @@ impl MapEngine {
         let Some(view) = self.view.resolve(&self.settings, &input) else {
             return Ok(FrameStats { tiles: 0, target_zoom: 0, coverage_version: 0 });
         };
-        // The GPU's far plane is far past the CPU's, which the coverage is cut by.
-        let projection_view = matrix::multiply(&RenderCamera::gpu_clip_depth_adjustment(), &view.camera.projection_view);
-        let mut uniform = [0u8; 64];
-        for (bytes, value) in uniform.as_chunks_mut::<4>().0.iter_mut().zip(projection_view) {
-            bytes.copy_from_slice(&(value as f32).to_le_bytes());
-        }
-        self.queue.write_buffer(&self.frame_buffer, 0, &uniform);
-        // The targets come finest first: drawn in reverse, a finer tile covers the coarser one under it.
-        self.instances.clear();
-        for target in view.content.targets.iter().rev() {
-            let tile = target.tile;
-            let origin = view.presentation.flat.tile_origin_and_size(tile.x, tile.y, tile.z, tile.wrap);
-            self.instances.extend_from_slice(&[origin[0] as f32, origin[1] as f32, origin[2] as f32]);
-            self.instances.extend_from_slice(&zoom_color(tile.z));
-        }
         let stats = FrameStats { tiles: view.content.targets.len(), target_zoom: view.target_zoom, coverage_version: view.content.coverage_version };
-        if stats.tiles > self.instance_capacity {
-            self.instance_capacity = stats.tiles.next_power_of_two();
-            self.instance_buffer = Self::make_instance_buffer(&self.device, self.instance_capacity);
-        }
-        let mut bytes = Vec::with_capacity(self.instances.len() * 4);
-        for value in &self.instances {
-            bytes.extend_from_slice(&value.to_le_bytes());
-        }
-        self.queue.write_buffer(&self.instance_buffer, 0, &bytes);
-
         let (frame, texture_view) = match &self.target {
             Target::Surface { surface, config } => match surface.get_current_texture() {
                 wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
@@ -359,36 +301,38 @@ impl MapEngine {
                 }
                 wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                     // The surface changed under the frame: it is configured again and the next frame draws.
-                    surface.configure(&self.device, config);
+                    surface.configure(&self.gpu.device, config);
                     return Ok(stats);
                 }
                 other => return Err(EngineError::Surface(format!("{other:?}"))),
             },
             Target::Texture(texture) => (None, texture.create_view(&wgpu::TextureViewDescriptor::default())),
         };
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("map"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &texture_view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(CLEAR_COLOR), store: wgpu::StoreOp::Store } })],
-                ..Default::default()
-            });
-            if stats.tiles > 0 {
-                pass.set_pipeline(&self.pipeline);
-                pass.set_bind_group(0, &self.bind_group, &[]);
-                pass.set_vertex_buffer(0, self.instance_buffer.slice(..(bytes.len() as u64)));
-                pass.draw(0..4, 0..stats.tiles as u32);
-            }
-        }
-        self.queue.submit([encoder.finish()]);
+        // The GPU's far plane is far past the CPU's, which the coverage is cut by.
+        let projection_view = matrix::multiply(&RenderCamera::gpu_clip_depth_adjustment(), &view.camera.projection_view).map(|value| value as f32);
+        self.frame_number += 1;
+        let context = FrameContext { frame_number: self.frame_number, draw_width: self.width, draw_height: self.height, pixels_per_point: self.pixels_per_point, planning_zoom: self.camera.planning_zoom(), view: &view, projection_view };
+        let setup = FrameSetup { availability: availability(), clear_color: CLEAR_COLOR };
+        let mut subsystems: [&mut dyn RenderSubsystem; 1] = [&mut self.tile_grid];
+        self.frame_engine.frame(&self.gpu.device, &self.gpu.queue, &texture_view, &setup, &context, &mut subsystems);
         if let Some(frame) = frame {
-            self.queue.present(frame);
+            self.gpu.queue.present(frame);
         }
         Ok(stats)
     }
 
+    /// The GPU the engine draws with: the adapter, what the device took of it, the limits.
+    pub fn gpu_report(&self) -> String {
+        self.gpu.report()
+    }
+
+    /// What the device can do beyond core WebGPU.
+    pub fn gpu_capabilities(&self) -> crate::gpu::GpuCapabilities {
+        self.gpu.capabilities
+    }
+
     /// The device, for a host that reads a frame back or watches for errors.
     pub fn device(&self) -> &wgpu::Device {
-        &self.device
+        &self.gpu.device
     }
 }

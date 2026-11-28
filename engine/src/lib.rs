@@ -10,6 +10,10 @@
 //! written on. `android` is the binding the Kotlin library calls through JNI.
 
 pub mod engine;
+pub mod frame;
+pub mod gpu;
+pub mod render_layer;
+mod tile_grid;
 
 #[cfg(target_os = "android")]
 mod android;

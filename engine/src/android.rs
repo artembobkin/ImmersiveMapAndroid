@@ -39,6 +39,9 @@ fn make(env: &JNIEnv, surface: &JObject, width: u32, height: u32, pixels_per_poi
     // Safety: the window is kept beside the engine and dropped after it, so it outlives the surface.
     let surface = unsafe { instance.create_surface_unsafe(target) }.map_err(|error| error.to_string())?;
     let engine = pollster::block_on(MapEngine::with_surface(&instance, surface, width, height, pixels_per_point)).map_err(|error| error.to_string())?;
+    for line in engine.gpu_report().lines() {
+        log::info!("{line}");
+    }
     Ok(AndroidEngine { engine, _window: window })
 }
 

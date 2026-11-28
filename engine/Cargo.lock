@@ -334,6 +334,7 @@ dependencies = [
  "map-frame",
  "map-geo",
  "map-visibility",
+ "naga",
  "ndk",
  "pollster",
  "raw-window-handle",
@@ -468,7 +469,7 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 [[package]]
 name = "map-camera"
 version = "0.1.0"
-source = "git+https://github.com/artembobkin/ImmersiveMapCore?rev=45b6ad277b28c3d7009efb363659bb90087e2ecd#45b6ad277b28c3d7009efb363659bb90087e2ecd"
+source = "git+https://github.com/artembobkin/ImmersiveMapCore?rev=c20809d624c471f3d14a764e4938f76d7d9d4e73#c20809d624c471f3d14a764e4938f76d7d9d4e73"
 dependencies = [
  "map-geo",
 ]
@@ -476,7 +477,7 @@ dependencies = [
 [[package]]
 name = "map-frame"
 version = "0.1.0"
-source = "git+https://github.com/artembobkin/ImmersiveMapCore?rev=45b6ad277b28c3d7009efb363659bb90087e2ecd#45b6ad277b28c3d7009efb363659bb90087e2ecd"
+source = "git+https://github.com/artembobkin/ImmersiveMapCore?rev=c20809d624c471f3d14a764e4938f76d7d9d4e73#c20809d624c471f3d14a764e4938f76d7d9d4e73"
 dependencies = [
  "map-camera",
  "map-geo",
@@ -486,12 +487,12 @@ dependencies = [
 [[package]]
 name = "map-geo"
 version = "0.1.0"
-source = "git+https://github.com/artembobkin/ImmersiveMapCore?rev=45b6ad277b28c3d7009efb363659bb90087e2ecd#45b6ad277b28c3d7009efb363659bb90087e2ecd"
+source = "git+https://github.com/artembobkin/ImmersiveMapCore?rev=c20809d624c471f3d14a764e4938f76d7d9d4e73#c20809d624c471f3d14a764e4938f76d7d9d4e73"
 
 [[package]]
 name = "map-visibility"
 version = "0.1.0"
-source = "git+https://github.com/artembobkin/ImmersiveMapCore?rev=45b6ad277b28c3d7009efb363659bb90087e2ecd#45b6ad277b28c3d7009efb363659bb90087e2ecd"
+source = "git+https://github.com/artembobkin/ImmersiveMapCore?rev=c20809d624c471f3d14a764e4938f76d7d9d4e73#c20809d624c471f3d14a764e4938f76d7d9d4e73"
 dependencies = [
  "map-geo",
 ]
